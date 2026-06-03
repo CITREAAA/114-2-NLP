@@ -15,10 +15,18 @@ st.set_page_config(
 )
 
 # =========================
-# 模型路徑
+# 模型路徑與裝置設定
 # =========================
 BERT_MODEL_PATH = "./my_bert_model"
 ROBERTA_MODEL_PATH = "./my_roberta_model"
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Ensemble 權重
+# class 0：RoBERTa 0.85 + BERT 0.15
+# class 1：RoBERTa 0.35 + BERT 0.65
+weight_roberta = torch.tensor([0.85, 0.35], dtype=torch.float32).to(device)
+weight_bert = torch.tensor([0.15, 0.65], dtype=torch.float32).to(device)
 
 # =========================
 # CSS 美化
@@ -111,11 +119,10 @@ div.stButton > button {
 """, unsafe_allow_html=True)
 
 # =========================
-# 載入模型 (已修正參數衝突問題)
+# 載入模型
 # =========================
 @st.cache_resource
 def load_model(model_path):
-    # 移除 tokenizer_file，交由 from_pretrained 自動解析
     tokenizer = AutoTokenizer.from_pretrained(
         model_path,
         use_fast=True,
@@ -127,13 +134,21 @@ def load_model(model_path):
         local_files_only=True
     )
 
+    model.to(device)
     model.eval()
     return tokenizer, model
 
 # =========================
-# 預測函式
+# 工具函式
 # =========================
-def predict_sentiment(text, tokenizer, model):
+def label_info(predicted_class):
+    if predicted_class == 1:
+        return "Positive 正向", "😊"
+    else:
+        return "Negative 負向", "😟"
+
+
+def get_probabilities(text, tokenizer, model):
     inputs = tokenizer(
         str(text),
         return_tensors="pt",
@@ -142,28 +157,58 @@ def predict_sentiment(text, tokenizer, model):
         max_length=512
     )
 
+    inputs = {key: value.to(device) for key, value in inputs.items()}
+
     with torch.no_grad():
         outputs = model(**inputs)
         logits = outputs.logits
         probabilities = torch.softmax(logits, dim=1)
-        predicted_class = torch.argmax(probabilities, dim=1).item()
-        confidence = probabilities[0][predicted_class].item()
 
-    if predicted_class == 1:
-        label = "Positive 正向"
-        emoji = "😊"
-    else:
-        label = "Negative 負向"
-        emoji = "😟"
+    return probabilities
+
+
+def predict_single_model(text, tokenizer, model):
+    probabilities = get_probabilities(text, tokenizer, model)
+    predicted_class = torch.argmax(probabilities, dim=1).item()
+    confidence = probabilities[0][predicted_class].item()
+    label, emoji = label_info(predicted_class)
 
     return label, confidence, predicted_class, emoji
+
+
+def predict_ensemble(text, bert_tokenizer, bert_model, roberta_tokenizer, roberta_model):
+    bert_probs = get_probabilities(text, bert_tokenizer, bert_model)
+    roberta_probs = get_probabilities(text, roberta_tokenizer, roberta_model)
+
+    final_probs = (roberta_probs * weight_roberta) + (bert_probs * weight_bert)
+
+    predicted_class = torch.argmax(final_probs, dim=1).item()
+    confidence = final_probs[0][predicted_class].item()
+    label, emoji = label_info(predicted_class)
+
+    return label, confidence, predicted_class, emoji
+
+
+def predict_sentiment(text):
+    if model_choice == "BERT":
+        return predict_single_model(text, tokenizer, model)
+    elif model_choice == "RoBERTa":
+        return predict_single_model(text, tokenizer, model)
+    else:
+        return predict_ensemble(
+            text,
+            bert_tokenizer,
+            bert_model,
+            roberta_tokenizer,
+            roberta_model
+        )
 
 # =========================
 # 主標題
 # =========================
 st.markdown('<div class="main-title">💬 BERT / RoBERTa 情緒分析系統</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-title">使用深度學習模型分析文字情緒，支援單句預測與 CSV 批次分析</div>',
+    '<div class="sub-title">使用深度學習模型分析文字情緒，支援單句預測、CSV 批次分析與加權融合</div>',
     unsafe_allow_html=True
 )
 
@@ -178,7 +223,7 @@ if not bert_exists and not roberta_exists:
     st.stop()
 
 # =========================
-# 選擇模型 (已取消 RoBERTa 註解，修正下拉選單邏輯)
+# 選擇模型
 # =========================
 available_models = []
 
@@ -187,6 +232,9 @@ if bert_exists:
 
 if roberta_exists:
     available_models.append("RoBERTa")
+
+if bert_exists and roberta_exists:
+    available_models.append("BERT + RoBERTa 加權融合")
 
 st.markdown('<div class="card">', unsafe_allow_html=True)
 
@@ -198,11 +246,19 @@ model_choice = st.selectbox(
 if model_choice == "BERT":
     tokenizer, model = load_model(BERT_MODEL_PATH)
     current_model_name = "BERT"
-else:
+elif model_choice == "RoBERTa":
     tokenizer, model = load_model(ROBERTA_MODEL_PATH)
     current_model_name = "RoBERTa"
+else:
+    bert_tokenizer, bert_model = load_model(BERT_MODEL_PATH)
+    roberta_tokenizer, roberta_model = load_model(ROBERTA_MODEL_PATH)
+    current_model_name = "BERT + RoBERTa 加權融合"
 
 st.success(f"目前使用模型：{current_model_name}")
+st.caption(f"目前運算裝置：{device}")
+
+if model_choice == "BERT + RoBERTa 加權融合":
+    st.info("加權設定：class 0 = RoBERTa 0.85 + BERT 0.15；class 1 = RoBERTa 0.35 + BERT 0.65")
 
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -241,8 +297,8 @@ with tab1:
     with col3:
         st.markdown("""
         <div class="card">
-            <h3>📊 視覺化圖表</h3>
-            <p class="small-text">系統會自動產生情緒分佈圖，方便觀察資料整體趨勢。</p>
+            <h3>📊 加權融合</h3>
+            <p class="small-text">可將 BERT 與 RoBERTa 的預測機率依照指定權重融合。</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -250,7 +306,7 @@ with tab1:
     <div class="card">
         <h3>系統簡介</h3>
         <p>
-        本系統可使用 BERT 或 RoBERTa 模型進行情緒分析。
+        本系統可使用 BERT、RoBERTa 或 BERT + RoBERTa 加權融合模型進行情緒分析。
         使用者可以輸入單一句子，或上傳 CSV 檔案進行批次分析。
         分析結果會顯示預測情緒、信心分數，並透過圖表呈現正負向比例。
         </p>
@@ -265,7 +321,7 @@ with tab2:
     st.markdown('<div class="card">', unsafe_allow_html=True)
 
     st.header("🔍 單句情緒分析")
-    st.write(f"請輸入一段英文文字，系統會使用 **{current_model_name}** 模型進行情緒判斷。")
+    st.write(f"請輸入一段英文文字，系統會使用 **{current_model_name}** 進行情緒判斷。")
 
     user_input = st.text_area(
         "輸入文字",
@@ -281,7 +337,7 @@ with tab2:
         if user_input.strip() == "":
             st.warning("請先輸入文字。")
         else:
-            label, confidence, predicted_class, emoji = predict_sentiment(user_input, tokenizer, model)
+            label, confidence, predicted_class, emoji = predict_sentiment(user_input)
 
             col1, col2, col3 = st.columns(3)
 
@@ -326,13 +382,13 @@ with tab2:
             st.progress(confidence)
 
 # =========================
-# CSV 批次分析 (已加上 plt.close 釋放記憶體)
+# CSV 批次分析
 # =========================
 with tab3:
     st.markdown('<div class="card">', unsafe_allow_html=True)
 
     st.header("📁 CSV 批次情緒分析")
-    st.write(f"請上傳 CSV 檔案，系統會使用 **{current_model_name}** 模型分析。")
+    st.write(f"請上傳 CSV 檔案，系統會使用 **{current_model_name}** 分析。")
     st.write("CSV 檔案中必須包含 `text` 欄位。")
 
     example_df = pd.DataFrame({
@@ -365,7 +421,7 @@ with tab3:
                 classes = []
 
                 for text in df["text"]:
-                    label, confidence, predicted_class, emoji = predict_sentiment(text, tokenizer, model)
+                    label, confidence, predicted_class, emoji = predict_sentiment(text)
                     results.append(label)
                     confidences.append(confidence)
                     classes.append(predicted_class)
@@ -398,13 +454,13 @@ with tab3:
                 sentiment_counts = df["prediction"].value_counts()
 
                 fig, ax = plt.subplots(figsize=(7, 4))
-                ax.bar(sentiment_counts.index, sentiment_counts.values, color=['#2ECC71', '#E74C3C'][:len(sentiment_counts)])
+                ax.bar(sentiment_counts.index, sentiment_counts.values)
                 ax.set_xlabel("Sentiment")
                 ax.set_ylabel("Count")
                 ax.set_title(f"Sentiment Distribution - {current_model_name}")
 
                 st.pyplot(fig)
-                plt.close(fig) # <-- 新增這行，釋放記憶體防崩潰
+                plt.close(fig)
 
                 csv_result = df.to_csv(index=False).encode("utf-8-sig")
 
@@ -431,7 +487,7 @@ with tab4:
     <div class="card">
         <h2>🎯 專案目的</h2>
         <p>
-        本專案希望透過 BERT 與 RoBERTa 深度學習模型，分析使用者輸入文字或 CSV 資料中的情緒傾向。
+        本專案希望透過 BERT、RoBERTa 與加權融合方法，分析使用者輸入文字或 CSV 資料中的情緒傾向。
         同時利用 Streamlit 建立互動式前端介面，讓使用者能更直觀地查看分析結果。
         </p>
     </div>
@@ -441,7 +497,7 @@ with tab4:
     <div class="card">
         <h2>⚙️ 系統功能</h2>
         <ol>
-            <li>選擇 BERT 或 RoBERTa 模型</li>
+            <li>選擇 BERT、RoBERTa 或 BERT + RoBERTa 加權融合</li>
             <li>單句文字情緒分析</li>
             <li>CSV 批次情緒分析</li>
             <li>顯示模型預測結果與信心分數</li>
