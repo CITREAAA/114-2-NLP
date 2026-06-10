@@ -2,34 +2,34 @@ import os
 import torch
 import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, AutoConfig
 
 # =========================
-# 頁面設定
+# Page Configuration
 # =========================
 st.set_page_config(
-    page_title="BERT / RoBERTa 情緒分析系統",
+    page_title="BERT / RoBERTa Sentiment Analysis System",
     page_icon="💬",
     layout="wide"
 )
 
 # =========================
-# 模型路徑與裝置設定
+# Model Paths and Device Settings
 # =========================
 BERT_MODEL_PATH = "./my_bert_model"
 ROBERTA_MODEL_PATH = "./my_roberta_model"
+FINAL_MODEL_PATH = "./final_model"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Ensemble 權重
-# class 0：RoBERTa 0.85 + BERT 0.15
-# class 1：RoBERTa 0.35 + BERT 0.65
+# Ensemble weights
+# class 0: RoBERTa 0.85 + BERT 0.15
+# class 1: RoBERTa 0.35 + BERT 0.65
 weight_roberta = torch.tensor([0.85, 0.35], dtype=torch.float32).to(device)
 weight_bert = torch.tensor([0.15, 0.65], dtype=torch.float32).to(device)
 
 # =========================
-# CSS 美化
+# CSS Styling
 # =========================
 st.markdown("""
 <style>
@@ -119,7 +119,7 @@ div.stButton > button {
 """, unsafe_allow_html=True)
 
 # =========================
-# 載入模型
+# Load Model
 # =========================
 @st.cache_resource
 def load_model(model_path):
@@ -136,16 +136,48 @@ def load_model(model_path):
 
     model.to(device)
     model.eval()
+
+    return tokenizer, model
+
+
+@st.cache_resource
+def load_final_model(final_model_path, tokenizer_path):
+    """
+    Load Final Model weights from ./final_model,
+    but use RoBERTa tokenizer and config from ./my_roberta_model.
+    This avoids the missing model_type error in final_model/config.json.
+    """
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_path,
+        use_fast=True,
+        local_files_only=True
+    )
+
+    config = AutoConfig.from_pretrained(
+        tokenizer_path,
+        local_files_only=True
+    )
+
+    model = AutoModelForSequenceClassification.from_pretrained(
+        final_model_path,
+        config=config,
+        local_files_only=True
+    )
+
+    model.to(device)
+    model.eval()
+
     return tokenizer, model
 
 # =========================
-# 工具函式
+# Utility Functions
 # =========================
 def label_info(predicted_class):
     if predicted_class == 1:
-        return "Positive 正向", "😊"
+        return "Positive", "😊"
     else:
-        return "Negative 負向", "😟"
+        return "Negative", "😟"
 
 
 def get_probabilities(text, tokenizer, model):
@@ -192,8 +224,13 @@ def predict_ensemble(text, bert_tokenizer, bert_model, roberta_tokenizer, robert
 def predict_sentiment(text):
     if model_choice == "BERT":
         return predict_single_model(text, tokenizer, model)
+
     elif model_choice == "RoBERTa":
         return predict_single_model(text, tokenizer, model)
+
+    elif model_choice == "Final Model":
+        return predict_single_model(text, tokenizer, model)
+
     else:
         return predict_ensemble(
             text,
@@ -204,26 +241,33 @@ def predict_sentiment(text):
         )
 
 # =========================
-# 主標題
+# Main Title
 # =========================
-st.markdown('<div class="main-title">💬 BERT / RoBERTa 情緒分析系統</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-title">使用深度學習模型分析文字情緒，支援單句預測、CSV 批次分析與加權融合</div>',
+    '<div class="main-title">💬 BERT / RoBERTa Sentiment Analysis System</div>',
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    '<div class="sub-title">Analyze text sentiment with deep learning models, supporting single sentence prediction, CSV batch analysis, final model prediction, and weighted ensemble</div>',
     unsafe_allow_html=True
 )
 
 # =========================
-# 檢查模型資料夾
+# Check Model Folders
 # =========================
 bert_exists = os.path.exists(BERT_MODEL_PATH)
 roberta_exists = os.path.exists(ROBERTA_MODEL_PATH)
+final_exists = os.path.exists(FINAL_MODEL_PATH)
 
-if not bert_exists and not roberta_exists:
-    st.error("找不到模型資料夾，請確認 my_bert_model 或 my_roberta_model 是否放在 app.py 同一層。")
+if not bert_exists and not roberta_exists and not final_exists:
+    st.error(
+        "Model folder not found. Please make sure my_bert_model, my_roberta_model, or final_model is in the same directory as app.py."
+    )
     st.stop()
 
 # =========================
-# 選擇模型
+# Model Selection
 # =========================
 available_models = []
 
@@ -233,47 +277,65 @@ if bert_exists:
 if roberta_exists:
     available_models.append("RoBERTa")
 
-if bert_exists and roberta_exists:
-    available_models.append("BERT + RoBERTa 加權融合")
+if final_exists:
+    available_models.append("Final Model")
 
-st.markdown('<div class="card">', unsafe_allow_html=True)
+if bert_exists and roberta_exists:
+    available_models.append("BERT + RoBERTa Weighted Ensemble")
 
 model_choice = st.selectbox(
-    "請選擇要使用的模型",
+    "Select a model",
     available_models
 )
 
 if model_choice == "BERT":
     tokenizer, model = load_model(BERT_MODEL_PATH)
     current_model_name = "BERT"
+
 elif model_choice == "RoBERTa":
     tokenizer, model = load_model(ROBERTA_MODEL_PATH)
     current_model_name = "RoBERTa"
+
+elif model_choice == "Final Model":
+    if not roberta_exists:
+        st.error(
+            "Final Model needs the RoBERTa tokenizer and config. Please keep my_roberta_model in the same directory as app.py."
+        )
+        st.stop()
+
+    tokenizer, model = load_final_model(FINAL_MODEL_PATH, ROBERTA_MODEL_PATH)
+    current_model_name = "Final Model"
+
 else:
     bert_tokenizer, bert_model = load_model(BERT_MODEL_PATH)
     roberta_tokenizer, roberta_model = load_model(ROBERTA_MODEL_PATH)
-    current_model_name = "BERT + RoBERTa 加權融合"
+    current_model_name = "BERT + RoBERTa Weighted Ensemble"
 
-st.success(f"目前使用模型：{current_model_name}")
-st.caption(f"目前運算裝置：{device}")
+st.success(f"Current model: {current_model_name}")
+st.caption(f"Current device: {device}")
 
-if model_choice == "BERT + RoBERTa 加權融合":
-    st.info("加權設定：class 0 = RoBERTa 0.85 + BERT 0.15；class 1 = RoBERTa 0.35 + BERT 0.65")
+if model_choice == "BERT + RoBERTa Weighted Ensemble":
+    st.info(
+        "Weight settings: class 0 = RoBERTa 0.85 + BERT 0.15; class 1 = RoBERTa 0.35 + BERT 0.65"
+    )
 
-st.markdown('</div>', unsafe_allow_html=True)
+if model_choice == "Final Model":
+    st.info(
+        "Final Model is loaded from ./final_model. The tokenizer and config are loaded from ./my_roberta_model."
+    )
 
 # =========================
-# 上方功能欄位
+# Tabs
 # =========================
 tab1, tab2, tab3, tab4 = st.tabs([
-    "🏠 首頁",
-    "🔍 單句情緒分析",
-    "📁 CSV 批次分析",
-    "📌 專案說明"
+    "🏠 Home",
+    "🔍 Single Sentence Analysis",
+    "📁 CSV Batch Analysis",
+    "📌 Project Description"
 ])
 
 # =========================
-# 首頁
+# Home
 # =========================
 with tab1:
     col1, col2, col3 = st.columns(3)
@@ -281,61 +343,66 @@ with tab1:
     with col1:
         st.markdown("""
         <div class="card">
-            <h3>🔍 單句分析</h3>
-            <p class="small-text">輸入任意英文句子，系統會即時判斷情緒為正向或負向。</p>
+            <h3>🔍 Single Sentence Analysis</h3>
+            <p class="small-text">
+            Enter an English sentence and the system will predict whether the sentiment is positive or negative.
+            </p>
         </div>
         """, unsafe_allow_html=True)
 
     with col2:
         st.markdown("""
         <div class="card">
-            <h3>📁 CSV 批次分析</h3>
-            <p class="small-text">上傳包含 text 欄位的 CSV 檔案，可一次分析多筆資料。</p>
+            <h3>📁 CSV Batch Analysis</h3>
+            <p class="small-text">
+            Upload a CSV file containing a text column to analyze multiple records at once.
+            </p>
         </div>
         """, unsafe_allow_html=True)
 
     with col3:
         st.markdown("""
         <div class="card">
-            <h3>📊 加權融合</h3>
-            <p class="small-text">可將 BERT 與 RoBERTa 的預測機率依照指定權重融合。</p>
+            <h3>📊 Model Selection</h3>
+            <p class="small-text">
+            Choose BERT, RoBERTa, Final Model, or a weighted ensemble model for prediction.
+            </p>
         </div>
         """, unsafe_allow_html=True)
 
     st.markdown(f"""
     <div class="card">
-        <h3>系統簡介</h3>
+        <h3>System Overview</h3>
         <p>
-        本系統可使用 BERT、RoBERTa 或 BERT + RoBERTa 加權融合模型進行情緒分析。
-        使用者可以輸入單一句子，或上傳 CSV 檔案進行批次分析。
-        分析結果會顯示預測情緒、信心分數，並透過圖表呈現正負向比例。
+        This system can perform sentiment analysis using BERT, RoBERTa, Final Model,
+        or the BERT + RoBERTa weighted ensemble model.
+        Users can enter a single sentence or upload a CSV file for batch analysis.
+        The analysis results display the predicted sentiment, class label, confidence score, and the model used.
         </p>
-        <p><b>目前使用模型：</b>{current_model_name}</p>
+        <p><b>Current model:</b> {current_model_name}</p>
     </div>
     """, unsafe_allow_html=True)
 
 # =========================
-# 單句情緒分析
+# Single Sentence Analysis
 # =========================
 with tab2:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-
-    st.header("🔍 單句情緒分析")
-    st.write(f"請輸入一段英文文字，系統會使用 **{current_model_name}** 進行情緒判斷。")
+    st.header("🔍 Single Sentence Sentiment Analysis")
+    st.write(
+        f"Enter an English text, and the system will use **{current_model_name}** to predict its sentiment."
+    )
 
     user_input = st.text_area(
-        "輸入文字",
-        placeholder="例如：I love this product. It is amazing!",
+        "Input Text",
+        placeholder="Example: I love this product. It is amazing!",
         height=160
     )
 
-    analyze_btn = st.button("開始分析", use_container_width=True)
-
-    st.markdown('</div>', unsafe_allow_html=True)
+    analyze_btn = st.button("Analyze", use_container_width=True)
 
     if analyze_btn:
         if user_input.strip() == "":
-            st.warning("請先輸入文字。")
+            st.warning("Please enter some text first.")
         else:
             label, confidence, predicted_class, emoji = predict_sentiment(user_input)
 
@@ -345,7 +412,7 @@ with tab2:
                 st.markdown(f"""
                 <div class="metric-box">
                     <div class="metric-number">{emoji}</div>
-                    <div class="metric-label">情緒圖示</div>
+                    <div class="metric-label">Sentiment Icon</div>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -353,7 +420,7 @@ with tab2:
                 st.markdown(f"""
                 <div class="metric-box">
                     <div class="metric-number">{predicted_class}</div>
-                    <div class="metric-label">預測類別</div>
+                    <div class="metric-label">Predicted Class</div>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -361,7 +428,7 @@ with tab2:
                 st.markdown(f"""
                 <div class="metric-box">
                     <div class="metric-number">{confidence:.2%}</div>
-                    <div class="metric-label">信心分數</div>
+                    <div class="metric-label">Confidence Score</div>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -369,53 +436,53 @@ with tab2:
 
             if predicted_class == 1:
                 st.markdown(
-                    f'<div class="result-positive">{emoji} 預測結果：{label}</div>',
+                    f'<div class="result-positive">{emoji} Prediction Result: {label}</div>',
                     unsafe_allow_html=True
                 )
             else:
                 st.markdown(
-                    f'<div class="result-negative">{emoji} 預測結果：{label}</div>',
+                    f'<div class="result-negative">{emoji} Prediction Result: {label}</div>',
                     unsafe_allow_html=True
                 )
 
-            st.write("信心分數")
+            st.write("Confidence Score")
             st.progress(confidence)
 
 # =========================
-# CSV 批次分析
+# CSV Batch Analysis
 # =========================
 with tab3:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-
-    st.header("📁 CSV 批次情緒分析")
-    st.write(f"請上傳 CSV 檔案，系統會使用 **{current_model_name}** 分析。")
-    st.write("CSV 檔案中必須包含 `text` 欄位。")
+    st.header("📁 CSV Batch Sentiment Analysis")
+    st.write(
+        f"Upload a CSV file, and the system will analyze it using **{current_model_name}**."
+    )
+    st.write("The CSV file must contain a `text` column.")
 
     example_df = pd.DataFrame({
         "text": [
             "I love this movie.",
             "This product is terrible.",
-            "The service is very good."
+            "Great job Mercedes, another masterclass in disappointment."
         ]
     })
 
-    st.write("範例格式：")
+    st.write("Example format:")
     st.dataframe(example_df, use_container_width=True)
 
-    uploaded_file = st.file_uploader("上傳 CSV 檔案", type=["csv"])
-
-    st.markdown('</div>', unsafe_allow_html=True)
+    uploaded_file = st.file_uploader("Upload CSV File", type=["csv"])
 
     if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
 
         if "text" not in df.columns:
-            st.error("CSV 檔案中找不到 `text` 欄位，請確認欄位名稱。")
+            st.error(
+                "The `text` column was not found in the CSV file. Please check the column name."
+            )
         else:
-            st.subheader("原始資料")
+            st.subheader("Original Data")
             st.dataframe(df, use_container_width=True)
 
-            if st.button("開始批次分析", use_container_width=True):
+            if st.button("Start Batch Analysis", use_container_width=True):
                 results = []
                 confidences = []
                 classes = []
@@ -431,7 +498,7 @@ with tab3:
                 df["confidence"] = confidences
                 df["model"] = current_model_name
 
-                st.subheader("分析結果")
+                st.subheader("Analysis Results")
                 st.dataframe(df, use_container_width=True)
 
                 positive_count = (df["class"] == 1).sum()
@@ -441,31 +508,18 @@ with tab3:
                 col1, col2, col3 = st.columns(3)
 
                 with col1:
-                    st.metric("總資料筆數", total_count)
+                    st.metric("Total Records", total_count)
 
                 with col2:
-                    st.metric("正向數量", positive_count)
+                    st.metric("Positive Count", positive_count)
 
                 with col3:
-                    st.metric("負向數量", negative_count)
-
-                st.subheader("情緒分佈圖")
-
-                sentiment_counts = df["prediction"].value_counts()
-
-                fig, ax = plt.subplots(figsize=(7, 4))
-                ax.bar(sentiment_counts.index, sentiment_counts.values)
-                ax.set_xlabel("Sentiment")
-                ax.set_ylabel("Count")
-                ax.set_title(f"Sentiment Distribution - {current_model_name}")
-
-                st.pyplot(fig)
-                plt.close(fig)
+                    st.metric("Negative Count", negative_count)
 
                 csv_result = df.to_csv(index=False).encode("utf-8-sig")
 
                 st.download_button(
-                    label="下載分析結果 CSV",
+                    label="Download Result CSV",
                     data=csv_result,
                     file_name="sentiment_result.csv",
                     mime="text/csv",
@@ -473,45 +527,46 @@ with tab3:
                 )
 
 # =========================
-# 專案說明
+# Project Description
 # =========================
 with tab4:
     st.markdown("""
     <div class="card">
-        <h2>📌 專案名稱</h2>
-        <p>結合深度學習與視覺化之多平台情緒分析系統</p>
+        <h2>📌 Project Title</h2>
+        <p>A Multi-platform Sentiment Analysis System Combining Deep Learning and Visualization</p>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("""
     <div class="card">
-        <h2>🎯 專案目的</h2>
+        <h2>🎯 Project Objective</h2>
         <p>
-        本專案希望透過 BERT、RoBERTa 與加權融合方法，分析使用者輸入文字或 CSV 資料中的情緒傾向。
-        同時利用 Streamlit 建立互動式前端介面，讓使用者能更直觀地查看分析結果。
+        This project aims to analyze the sentiment tendency of user-input text or CSV data
+        using BERT, RoBERTa, Final Model, and a weighted ensemble method.
+        Streamlit is used to build an interactive frontend interface, allowing users to view
+        analysis results more intuitively.
         </p>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("""
     <div class="card">
-        <h2>⚙️ 系統功能</h2>
+        <h2>⚙️ System Features</h2>
         <ol>
-            <li>選擇 BERT、RoBERTa 或 BERT + RoBERTa 加權融合</li>
-            <li>單句文字情緒分析</li>
-            <li>CSV 批次情緒分析</li>
-            <li>顯示模型預測結果與信心分數</li>
-            <li>產生情緒分佈視覺化圖表</li>
-            <li>下載分析完成的 CSV 結果</li>
+            <li>Select BERT, RoBERTa, Final Model, or BERT + RoBERTa weighted ensemble</li>
+            <li>Single sentence sentiment analysis</li>
+            <li>CSV batch sentiment analysis</li>
+            <li>Display prediction results and confidence scores</li>
+            <li>Download completed CSV analysis results</li>
         </ol>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("""
     <div class="card">
-        <h2>🛠 使用技術</h2>
+        <h2>🛠 Technologies Used</h2>
         <p>
-        Python、Streamlit、PyTorch、Hugging Face Transformers、BERT、RoBERTa、Pandas、Matplotlib
+        Python, Streamlit, PyTorch, Hugging Face Transformers, BERT, RoBERTa, Pandas
         </p>
     </div>
     """, unsafe_allow_html=True)
