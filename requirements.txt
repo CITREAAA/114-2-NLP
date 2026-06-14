@@ -1,0 +1,7 @@
+torch
+transformers
+streamlit
+pandas
+scikit-learn
+joblib
+tqdm
